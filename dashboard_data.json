@@ -1,0 +1,62 @@
+{
+  "checklist": {
+    "Medical": [
+      {
+        "task": "Take morning medications",
+        "done": false
+      },
+      {
+        "task": "Check if prescription refills are needed",
+        "done": false
+      },
+      {
+        "task": "Drink 8 glasses of water",
+        "done": false
+      }
+    ],
+    "Financial": [
+      {
+        "task": "Check bank account balance",
+        "done": false
+      },
+      {
+        "task": "Review any pending bills",
+        "done": false
+      },
+      {
+        "task": "Update expense tracking",
+        "done": false
+      }
+    ],
+    "Personal": [
+      {
+        "task": "Call family/friends",
+        "done": false
+      },
+      {
+        "task": "Practice gratitude - write 3 things",
+        "done": false
+      },
+      {
+        "task": "Tidy up living space",
+        "done": false
+      }
+    ],
+    "Work": [
+      {
+        "task": "Review today's priorities",
+        "done": false
+      },
+      {
+        "task": "Check and respond to important emails",
+        "done": false
+      },
+      {
+        "task": "Plan tomorrow's schedule",
+        "done": false
+      }
+    ]
+  },
+  "schedule": [],
+  "last_saved": "2025-08-17T16:01:43.347778"
+}
