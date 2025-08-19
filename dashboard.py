@@ -6,6 +6,7 @@ import pickle
 import time
 import requests
 import random
+import pytz  # ✅ FIX: needed for timezone handling
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -18,13 +19,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
-
-def get_api_key():
-    with open("/home/drkeithcox/zen.key", 'r') as file:
-        line = file.read()
-
-        api_key = line.strip()
-        return(api_key)
 
 # Google Calendar API setup
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
@@ -86,31 +80,74 @@ class GoogleCalendarService:
             st.error("Please add your Google Calendar credentials.json file to the app directory")
             st.info("Download from: https://console.cloud.google.com/apis/credentials")
             return False
-    
-    def get_today_events(self):
-        """Get today's calendar events"""
+
+    # ✅ FIX: method moved into the class
+    def get_today_events(self, calendar_id='primary'):
+        """Get today's calendar events from specified calendar with proper timezone handling"""
         if not self.service or not self.authenticated:
             return []
         
-        # Get today's date range
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        tomorrow = today + timedelta(days=1)
-        
         try:
+            # Get local timezone - you can change this to your specific timezone
+            try:
+                # Try to detect system timezone
+                import time as _time
+                local_tz = pytz.timezone(_time.tzname[0])
+            except:
+                # Fallback - change this to your timezone (e.g., 'America/New_York', etc.)
+                local_tz = pytz.timezone('America/Los_Angeles')  # CHANGE THIS TO YOUR TIMEZONE
+            
+            # Get today in local timezone
+            now = datetime.now(local_tz)
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            today_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+            
+            # Format with proper timezone (RFC3339)
+            time_min = today_start.isoformat()
+            time_max = today_end.isoformat()
+            
+            # First attempt with timezone
             events_result = self.service.events().list(
-                calendarId='primary',
-                timeMin=today.isoformat() + 'Z',
-                timeMax=tomorrow.isoformat() + 'Z',
+                calendarId=calendar_id,
+                timeMin=time_min,
+                timeMax=time_max,
                 maxResults=50,
                 singleEvents=True,
-                orderBy='startTime'
+                orderBy='startTime',
+                timeZone=str(local_tz)  # Explicitly set timezone
             ).execute()
             
-            return events_result.get('items', [])
-        except Exception as e:
-            st.error(f"Error fetching calendar events: {e}")
-            return []
-    
+            events = events_result.get('items', [])
+            return events
+            
+        except Exception:
+            # Fallback to a wider time window; filter to today
+            try:
+                today = datetime.now()
+                start_of_range = (today - timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+                end_of_range = (today + timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
+                
+                time_min = start_of_range.isoformat()
+                time_max = end_of_range.isoformat()
+                
+                events_result = self.service.events().list(
+                    calendarId=calendar_id,
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    maxResults=100,
+                    singleEvents=True,
+                    orderBy='startTime'
+                ).execute()
+                
+                all_events = events_result.get('items', [])
+                # ✅ Use the global helper that checks "today"
+                today_events = [event for event in all_events if is_today_event(event)]
+                return today_events
+                
+            except Exception:
+                return []
+
+    # ✅ FIX: method moved into the class
     def get_calendar_list(self):
         """Get list of available calendars"""
         if not self.service or not self.authenticated:
@@ -123,17 +160,114 @@ class GoogleCalendarService:
             st.error(f"Error fetching calendar list: {e}")
             return []
 
+# Also update your format_event_time function to handle timezone better
 def format_event_time(event):
-    """Format event time for display"""
+    """Format event time for display with better timezone handling"""
     start = event.get('start', {})
     end = event.get('end', {})
     
     if 'dateTime' in start:
-        start_time = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00'))
-        end_time = datetime.fromisoformat(end['dateTime'].replace('Z', '+00:00'))
-        return f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')}"
-    else:
-        return "All Day"
+        try:
+            # Parse the datetime strings properly
+            start_dt_str = start['dateTime']
+            end_dt_str = end.get('dateTime')
+            if not end_dt_str:
+                return "All Day"
+            
+            # Handle different datetime formats from Google Calendar
+            if 'T' in start_dt_str:
+                # More robust parsing - handle timezone info properly
+                try:
+                    # Try parsing with timezone info
+                    start_time = datetime.fromisoformat(start_dt_str.replace('Z', '+00:00'))
+                    end_time = datetime.fromisoformat(end_dt_str.replace('Z', '+00:00'))
+                    
+                    # Convert to local time if needed
+                    if start_time.tzinfo:
+                        try:
+                            local_tz = pytz.timezone('America/Los_Angeles')  # CHANGE TO YOUR TIMEZONE
+                            start_time = start_time.astimezone(local_tz)
+                            end_time = end_time.astimezone(local_tz)
+                        except:
+                            pass  # Use original time if conversion fails
+                    
+                    # Format times nicely
+                    start_formatted = start_time.strftime('%I:%M %p').lstrip('0').replace(' 0', ' ')
+                    end_formatted = end_time.strftime('%I:%M %p').lstrip('0').replace(' 0', ' ')
+                    
+                    return f"{start_formatted} - {end_formatted}"
+                    
+                except Exception:
+                    # Fallback to simpler parsing
+                    start_clean = start_dt_str.split('T')[0] + 'T' + start_dt_str.split('T')[1].split('+')[0].split('-')[0].split('Z')[0]
+                    end_clean = end_dt_str.split('T')[0] + 'T' + end_dt_str.split('T')[1].split('+')[0].split('-')[0].split('Z')[0]
+                    
+                    start_time = datetime.fromisoformat(start_clean)
+                    end_time = datetime.fromisoformat(end_clean)
+                    
+                    start_formatted = start_time.strftime('%I:%M %p').lstrip('0').replace(' 0', ' ')
+                    end_formatted = end_time.strftime('%I:%M %p').lstrip('0').replace(' 0', ' ')
+                    
+                    return f"{start_formatted} - {end_formatted}"
+                    
+        except Exception:
+            # Final fallback - extract just hour and minute
+            try:
+                if 'T' in start.get('dateTime', ''):
+                    time_part = start['dateTime'].split('T')[1]
+                    hour = int(time_part[:2])
+                    minute = int(time_part[3:5])
+                    
+                    # Convert to 12-hour format
+                    if hour == 0:
+                        return f"12:{minute:02d} AM"
+                    elif hour < 12:
+                        return f"{hour}:{minute:02d} AM"
+                    elif hour == 12:
+                        return f"12:{minute:02d} PM"
+                    else:
+                        return f"{hour-12}:{minute:02d} PM"
+            except:
+                pass
+
+    return "All Day"
+
+# ✅ Keep a SINGLE global helper
+def is_today_event(event):
+    """Check if an event is actually today with better timezone handling"""
+    try:
+        today = datetime.now().date()
+        
+        start = event.get('start', {})
+        if 'dateTime' in start:
+            start_dt_str = start['dateTime']
+            if 'T' in start_dt_str:
+                dt = datetime.fromisoformat(start_dt_str.replace('Z', '+00:00'))
+                return dt.date() == today
+        elif 'date' in start:
+            event_date = datetime.fromisoformat(start['date']).date()
+            return event_date == today
+            
+        # Also check end date for events that might span midnight
+        end = event.get('end', {})
+        if 'dateTime' in end:
+            end_dt_str = end['dateTime']
+            if 'T' in end_dt_str:
+                dt = datetime.fromisoformat(end_dt_str.replace('Z', '+00:00'))
+                return dt.date() == today
+        elif 'date' in end:
+            end_date = datetime.fromisoformat(end['date']).date()
+            return end_date == today
+            
+    except Exception:
+        # If we can't parse the date, include the event to be safe
+        return True
+    
+    return False
+
+# ---------------------
+# The rest of your code
+# ---------------------
 
 # Initialize Google Calendar service
 if 'calendar_service' not in st.session_state:
@@ -277,7 +411,7 @@ def get_daily_quote():
 def get_api_ninjas_quote():
     """Get quote from API Ninjas"""
     try:
-        API_KEY = get_api_key()
+        API_KEY = "oBX0KVLhIg/7yjR8BwTGWg==tNwMQ9FnO4JY2gHK"
         url = "https://api.api-ninjas.com/v1/quotes"
         headers = {"X-Api-Key": API_KEY}
         
@@ -289,8 +423,7 @@ def get_api_ninjas_quote():
             quote = quotes[0]["quote"]
             author = quotes[0]["author"]
             return f'"{quote}" — {author}'
-    except Exception as e:
-        # Don't show error to user, just fall back
+    except Exception:
         pass
     
     # Fallback to local quote
@@ -308,8 +441,7 @@ def get_zenquotes_quote():
             quote = data[0]["q"]
             author = data[0]["a"]
             return f'"{quote}" — {author}'
-    except Exception as e:
-        # Don't show error to user, just fall back
+    except Exception:
         pass
     
     # Fallback to local quote
@@ -530,40 +662,101 @@ def main():
             
             with col_refresh:
                 if st.button("🔄 Refresh", help="Refresh calendar events"):
+                    # Clear any cached event data and force refresh
+                    if 'cached_events' in st.session_state:
+                        del st.session_state['cached_events']
+                    # Update refresh time
+                    st.session_state['last_refresh_time'] = datetime.now()
                     st.rerun()
             
             with col_calendar:
                 # Get available calendars
                 calendars = st.session_state.calendar_service.get_calendar_list()
                 if calendars:
-                    calendar_names = [cal['summary'] for cal in calendars]
-                    selected_calendar = st.selectbox("📅 Calendar:", calendar_names, index=0)
+                    calendar_options = [(cal['summary'], cal['id']) for cal in calendars]
+                    calendar_names = [cal[0] for cal in calendar_options]
+                    calendar_ids = [cal[1] for cal in calendar_options]
+                    
+                    # Find default selection (prefer "Personal" if it exists)
+                    default_index = 0
+                    for i, name in enumerate(calendar_names):
+                        if name.lower() == 'personal':
+                            default_index = i
+                            break
+                    
+                    selected_calendar_name = st.selectbox(
+                        "📅 Calendar:", 
+                        calendar_names, 
+                        index=default_index,
+                        key="calendar_selector"
+                    )
+                    
+                    # Get the calendar ID for the selected calendar
+                    selected_calendar_id = calendar_ids[calendar_names.index(selected_calendar_name)]
+                else:
+                    selected_calendar_id = 'primary'
             
-            # Get and display events
-            events = st.session_state.calendar_service.get_today_events()
+            # Get and display events from selected calendar
+            events = st.session_state.calendar_service.get_today_events(selected_calendar_id)
+            
+            # Store refresh time for display
+            if 'last_refresh_time' not in st.session_state:
+                st.session_state.last_refresh_time = datetime.now()
             
             if events:
-                st.markdown("#### 🗓️ From Google Calendar:")
+                # Filter events to only today's events with debug info
+                today_events = []
+                excluded_events = []
+                
                 for event in events:
-                    event_title = event.get('summary', 'Untitled Event')
-                    event_time = format_event_time(event)
-                    location = event.get('location', '')
-                    description = event.get('description', '')
+                    if is_today_event(event):
+                        today_events.append(event)
+                    else:
+                        excluded_events.append(event)
+                
+                if today_events:
+                    # Show last refresh time
+                    refresh_time = st.session_state.last_refresh_time.strftime("%I:%M %p")
+                    st.caption(f"Last updated: {refresh_time} | Showing {len(today_events)} events for today")
                     
-                    with st.container():
-                        st.markdown(f"**⏰ {event_time}**")
-                        st.markdown(f"📌 {event_title}")
-                        if location:
-                            st.markdown(f"📍 {location}")
-                        if description and len(description) < 100:
-                            st.markdown(f"📝 {description}")
-                        st.markdown("---")
+                    # Debug: Show excluded events if any
+                    if excluded_events and len(excluded_events) > 0:
+                        with st.expander(f"🔍 Debug: {len(excluded_events)} events filtered out", expanded=False):
+                            for event in excluded_events:
+                                event_title = event.get('summary', 'Untitled')
+                                start_time = event.get('start', {}).get('dateTime', event.get('start', {}).get('date', 'Unknown'))
+                                st.text(f"- {event_title}: {start_time}")
+                    
+                    st.markdown("#### 🗓️ From Google Calendar:")
+                    for event in today_events:
+                        event_title = event.get('summary', 'Untitled Event')
+                        event_time = format_event_time(event)
+                        location = event.get('location', '')
+                        
+                        # Compact display with minimal spacing
+                        st.markdown(f"""
+                        <div style="background-color: #f8f9fa; padding: 8px; margin: 4px 0; border-radius: 4px; border-left: 3px solid #007bff;">
+                            <div style="font-weight: bold; font-size: 14px; margin-bottom: 2px;">⏰ {event_time}</div>
+                            <div style="font-size: 16px; margin-bottom: 2px;">🔸 {event_title}</div>
+                            {f'<div style="font-size: 12px; color: #6c757d;">📍 {location}</div>' if location else ''}
+                        </div>
+                        """, unsafe_allow_html=True)
+                else:
+                    st.info("No Google Calendar events for today! 🎉")
+                    # Debug: Show all events if none match today
+                    if excluded_events:
+                        with st.expander(f"🔍 Debug: All {len(excluded_events)} events were filtered out", expanded=True):
+                            for event in excluded_events:
+                                event_title = event.get('summary', 'Untitled')
+                                start_time = event.get('start', {}).get('dateTime', event.get('start', {}).get('date', 'Unknown'))
+                                st.text(f"- {event_title}: {start_time}")
             else:
                 st.info("No Google Calendar events for today! 🎉")
             
             # Manual events section
             st.markdown("#### ➕ Additional Events")
         else:
+            st.info("Connect to Google Calendar to see your schedule")
             st.markdown("#### 📅 Manual Schedule")
         
         # Add new event form (manual events)
@@ -607,22 +800,25 @@ def main():
         elif not st.session_state.calendar_service.authenticated:
             st.info("Add manual events above or connect to Google Calendar! 📝")
         
-        # Daily Journal Section
+        # Daily Journal Section (PROPERLY PLACED WITHIN col1)
         st.markdown("---")
         st.markdown("### 📝 Daily Journal")
-        
+
         # Load today's journal if not already loaded
         if not st.session_state.journal_loaded:
             st.session_state.journal_content = load_today_journal()
             st.session_state.journal_loaded = True
-        
+
+        # Set up periodic auto-save HERE (after loading journal)
+        setup_periodic_autosave()
+
         # Display current journal file info and timestamp button
         col_filename, col_timestamp = st.columns([3, 1])
-        
+
         with col_filename:
             today_filename = get_today_filename()
             st.markdown(f"**Today's Journal:** `{today_filename}`")
-        
+
         with col_timestamp:
             if st.button("🕐 Insert Time", help="Insert current timestamp on new line"):
                 current_time = datetime.now().strftime("%I:%M %p")
@@ -635,24 +831,127 @@ def main():
                     st.session_state.journal_content = timestamp_text.strip()
                 
                 st.rerun()
-        
-        # Journal editor
+
+        # Enhanced journal editor with auto-save on Ctrl+Enter
+        st.markdown("""
+        <style>
+        .journal-container {
+            position: relative;
+        }
+        .save-indicator {
+            position: absolute;
+            top: -5px;
+            right: 10px;
+            background: #28a745;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            display: none;
+            z-index: 1000;
+        }
+        .save-indicator.show {
+            display: block;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        # Container for journal with save indicator
+        st.markdown('<div class="journal-container">', unsafe_allow_html=True)
+
+        # Save indicator (initially hidden)
+        st.markdown('<div id="save-indicator" class="save-indicator">💾 Saved!</div>', unsafe_allow_html=True)
+
+        # JavaScript for Ctrl+Enter auto-save
+        save_js = """
+        <script>
+        function setupJournalAutoSave() {
+            const textareas = document.querySelectorAll('textarea');
+            let journalTextarea = null;
+            
+            for (let textarea of textareas) {
+                if (textarea.placeholder && textarea.placeholder.includes('Write your thoughts')) {
+                    journalTextarea = textarea;
+                    break;
+                }
+            }
+            
+            if (journalTextarea) {
+                journalTextarea.removeEventListener('keydown', handleJournalKeydown);
+                journalTextarea.addEventListener('keydown', handleJournalKeydown);
+            }
+        }
+
+        function handleJournalKeydown(event) {
+            if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                event.preventDefault();
+                saveJournal();
+            }
+        }
+
+        function saveJournal() {
+            const indicator = document.getElementById('save-indicator');
+            if (indicator) {
+                indicator.classList.add('show');
+                setTimeout(() => {
+                    indicator.classList.remove('show');
+                }, 2000);
+            }
+            
+            const buttons = document.querySelectorAll('button');
+            for (let button of buttons) {
+                if (button.textContent.includes('💾 Quick Save')) {
+                    button.click();
+                    break;
+                }
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', setupJournalAutoSave);
+        const observer = new MutationObserver(setupJournalAutoSave);
+        observer.observe(document.body, { childList: true, subtree: true });
+        setTimeout(setupJournalAutoSave, 1000);
+        </script>
+        """
+
+        # Add the JavaScript
+        st.markdown(save_js, unsafe_allow_html=True)
+
+        # Journal editor with enhanced help text
         journal_content = st.text_area(
             "Write your thoughts, notes, and reflections for today:",
             value=st.session_state.journal_content,
             height=300,
-            help="This will be saved as a markdown file. Use markdown formatting like **bold**, *italic*, # headers, etc. Click 'Insert Time' to add timestamps."
+            help="💡 Press Ctrl+Enter to quickly save your journal! Use markdown formatting like **bold**, *italic*, # headers, etc. Click 'Insert Time' to add timestamps.",
+            key="journal_editor"
         )
-        
+
         # Update session state if content changed
         if journal_content != st.session_state.journal_content:
             st.session_state.journal_content = journal_content
-        
-        # Journal preview
-        if journal_content.strip():
-            with st.expander("📖 Preview", expanded=False):
-                st.markdown(journal_content)
-    
+
+        # Quick save button triggered by JavaScript
+        col_quick_save, col_preview = st.columns([1, 1])
+
+        with col_quick_save:
+            if st.button("💾 Quick Save", help="Save journal (or press Ctrl+Enter in the editor)", key="journal_quick_save"):
+                if st.session_state.journal_content.strip():
+                    journal_saved = save_journal(st.session_state.journal_content)
+                    if journal_saved:
+                        st.success("📝 Journal saved successfully!")
+                    else:
+                        st.error("❌ Journal save failed!")
+                else:
+                    st.info("📝 Journal is empty - nothing to save.")
+
+        with col_preview:
+            # Journal preview
+            if journal_content.strip():
+                with st.expander("📖 Preview", expanded=False):
+                    st.markdown(journal_content)
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
     with col2:
         st.markdown("### ✅ Daily Checklist")
         
@@ -750,7 +1049,7 @@ def main():
         if st.button("⚙️ Settings"):
             st.session_state.show_settings = not st.session_state.get('show_settings', False)
     
-            # Settings panel
+    # Settings panel
     if st.session_state.get('show_settings', False):
         st.markdown("---")
         st.markdown("### ⚙️ Settings")
@@ -850,6 +1149,69 @@ def main():
                     st.warning("Journal directory doesn't exist yet.")
             except Exception as e:
                 st.error(f"Error reading journal directory: {e}")
+
+
+# Add these helper functions OUTSIDE the main() function:
+
+def save_journal_enhanced(content):
+    """Enhanced save journal function with better error handling and feedback"""
+    config = load_config()
+    journal_path = config.get('journal_path', '')
+    
+    if not journal_path:
+        return False, "Please configure journal path in settings"
+    
+    filename = get_today_filename()
+    
+    try:
+        # Convert Windows path to WSL path if needed
+        if journal_path.startswith('/mnt/c/'):
+            wsl_path = journal_path
+        else:
+            wsl_path = journal_path.replace('C:\\', '/mnt/c/').replace('\\', '/')
+        
+        # Create directory if it doesn't exist
+        os.makedirs(wsl_path, exist_ok=True)
+        
+        full_path = os.path.join(wsl_path, filename)
+        
+        # Create backup of existing file if it exists
+        if os.path.exists(full_path):
+            backup_path = full_path + '.bak'
+            import shutil
+            shutil.copy2(full_path, backup_path)
+        
+        # Write the new content
+        with open(full_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        # Verify the file was written correctly
+        with open(full_path, 'r', encoding='utf-8') as f:
+            saved_content = f.read()
+            if saved_content == content:
+                return True, f"Journal saved to {filename}"
+            else:
+                return False, "File verification failed after save"
+        
+    except Exception as e:
+        return False, f"Error saving journal: {e}"
+
+def setup_periodic_autosave():
+    """Set up periodic auto-save for journal content"""
+    if 'last_autosave' not in st.session_state:
+        st.session_state.last_autosave = datetime.now()
+    
+    # Auto-save every 2 minutes if content has changed
+    current_time = datetime.now()
+    time_since_last_save = (current_time - st.session_state.last_autosave).total_seconds()
+    
+    if time_since_last_save > 120:  # 2 minutes
+        if st.session_state.journal_content.strip():
+            success, message = save_journal_enhanced(st.session_state.journal_content)
+            if success:
+                st.session_state.last_autosave = current_time
+                # Show subtle notification
+                st.sidebar.success("📝 Auto-saved journal")
 
 if __name__ == "__main__":
     main()

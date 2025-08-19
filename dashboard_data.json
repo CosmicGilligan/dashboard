@@ -3,28 +3,28 @@
     "Medical": [
       {
         "task": "Take morning medications",
-        "done": false
+        "done": true
       },
       {
         "task": "Check if prescription refills are needed",
+        "done": true
+      },
+      {
+        "task": "Dentist Appointment",
         "done": false
       },
       {
-        "task": "Drink 8 glasses of water",
+        "task": "Reschedule diabetes appointment",
         "done": false
       }
     ],
     "Financial": [
       {
         "task": "Check bank account balance",
-        "done": false
+        "done": true
       },
       {
         "task": "Review any pending bills",
-        "done": false
-      },
-      {
-        "task": "Update expense tracking",
         "done": false
       }
     ],
@@ -40,16 +40,20 @@
       {
         "task": "Tidy up living space",
         "done": false
+      },
+      {
+        "task": "Order Groceries",
+        "done": true
       }
     ],
     "Work": [
       {
         "task": "Review today's priorities",
-        "done": false
+        "done": true
       },
       {
         "task": "Check and respond to important emails",
-        "done": false
+        "done": true
       },
       {
         "task": "Plan tomorrow's schedule",
@@ -58,5 +62,5 @@
     ]
   },
   "schedule": [],
-  "last_saved": "2025-08-17T16:01:43.347778"
+  "last_saved": "2025-08-18T18:16:43.184787"
 }
